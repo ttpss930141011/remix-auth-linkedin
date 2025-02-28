@@ -8,11 +8,10 @@ async function main() {
 		"--no-color",
 		"--pack",
 	]);
-
 	let text = await new Response(proc.stdout).text();
 
 	let entrypointLines = text
-		.slice(text.indexOf('"remix-i18next/'))
+		.slice(text.indexOf('"remix-auth-linkedin/'))
 		.split("\n")
 		.filter(Boolean)
 		.filter((line) => !line.includes("─"))
@@ -43,6 +42,7 @@ async function main() {
 
 	if (entrypointsWithProblems.length > 0) {
 		console.error("Entrypoints with problems:");
+		console.error(entrypointsWithProblems);
 		process.exit(1);
 	}
 }
