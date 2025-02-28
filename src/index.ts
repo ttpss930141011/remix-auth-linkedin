@@ -1,11 +1,27 @@
 import { Cookie, SetCookie, type SetCookieInit } from "@mjackson/headers";
+import {
+	LinkedIn,
+	OAuth2RequestError,
+	type OAuth2Tokens,
+	UnexpectedErrorResponseBodyError,
+	UnexpectedResponseError,
+	generateState,
+} from "arctic";
 import createDebug from "debug";
 import { Strategy } from "remix-auth/strategy";
 import { redirect } from "./lib/redirect.js";
 
+type URLConstructor = ConstructorParameters<typeof URL>[0];
+
 const debug = createDebug("LinkedInStrategy");
 
 export type LinkedInScope = "openid" | "profile" | "email";
+
+export {
+	OAuth2RequestError,
+	UnexpectedResponseError,
+	UnexpectedErrorResponseBodyError,
+};
 
 /**
  * This type declares what configuration the strategy needs from the
@@ -66,11 +82,19 @@ export class LinkedInStrategy<User> extends Strategy<
 > {
 	name = LinkedInStrategyDefaultName;
 
+	protected client: LinkedIn;
+
 	constructor(
 		protected options: LinkedInStrategy.ConstructorOptions,
 		verify: Strategy.VerifyFunction<User, LinkedInStrategy.VerifyOptions>,
 	) {
 		super(verify);
+
+		this.client = new LinkedIn(
+			options.clientId,
+			options.clientSecret,
+			options.redirectURI.toString(),
+		);
 	}
 
 	private get cookieName() {
@@ -100,67 +124,60 @@ export class LinkedInStrategy<User> extends Strategy<
 		debug("Request URL", request.url);
 
 		let url = new URL(request.url);
-		let code = url.searchParams.get("code");
-		let state = url.searchParams.get("state");
+
+		let stateUrl = url.searchParams.get("state");
 		let error = url.searchParams.get("error");
 
 		if (error) {
 			let description = url.searchParams.get("error_description");
 			let uri = url.searchParams.get("error_uri");
-			throw new Error(`LinkedIn OAuth error: ${error}, ${description}, ${uri}`);
+			throw new OAuth2RequestError(error, description, uri, stateUrl);
 		}
 
-		if (!state) {
+		if (!stateUrl) {
 			debug("No state found in the URL, redirecting to authorization endpoint");
 
-			// Generate a random state
-			let newState = crypto.randomUUID();
-			debug("Generated State", newState);
+			let state = generateState();
 
-			// Create authorization URL
-			let authorizationURL = new URL(
-				"https://www.linkedin.com/oauth/v2/authorization",
-			);
-			authorizationURL.searchParams.set("client_id", this.options.clientId);
-			authorizationURL.searchParams.set(
-				"redirect_uri",
-				this.options.redirectURI.toString(),
-			);
-			authorizationURL.searchParams.set("response_type", "code");
-			authorizationURL.searchParams.set(
-				"scope",
-				this.getScope(this.options.scopes),
-			);
-			authorizationURL.searchParams.set("state", newState);
+			debug("Generated State", state);
 
-			// Add any additional params
-			const params = this.authorizationParams(
-				authorizationURL.searchParams,
+			let url = this.client.createAuthorizationURL(
+				state,
+				Array.isArray(this.options.scopes)
+					? this.options.scopes
+					: this.options.scopes
+						? (this.options.scopes.split(
+								LinkedInStrategyScopeSeparator,
+							) as LinkedInScope[])
+						: (["openid", "profile", "email"] as LinkedInScope[]),
+			);
+
+			url.search = this.authorizationParams(
+				url.searchParams,
 				request,
-			);
-			authorizationURL.search = params.toString();
+			).toString();
 
-			debug("Authorization URL", authorizationURL.toString());
+			debug("Authorization URL", url.toString());
 
-			// Set cookie with state for verification later
 			let header = new SetCookie({
 				name: this.cookieName,
-				value: new URLSearchParams({ state: newState }).toString(),
-				httpOnly: true,
+				value: new URLSearchParams({ state }).toString(),
+				httpOnly: true, // Prevents JavaScript from accessing the cookie
 				maxAge: 60 * 5, // 5 minutes
-				path: "/",
-				sameSite: "Lax",
+				path: "/", // Allow the cookie to be sent to any path
+				sameSite: "Lax", // Prevents it from being sent in cross-site requests
 				...this.cookieOptions,
 			});
 
-			throw redirect(authorizationURL.toString(), {
+			throw redirect(url.toString(), {
 				headers: { "Set-Cookie": header.toString() },
 			});
 		}
 
+		let code = url.searchParams.get("code");
+
 		if (!code) throw new ReferenceError("Missing code in the URL");
 
-		// Verify state
 		let cookie = new Cookie(request.headers.get("cookie") ?? "");
 		let params = new URLSearchParams(cookie.get(this.cookieName) || "");
 
@@ -168,44 +185,15 @@ export class LinkedInStrategy<User> extends Strategy<
 			throw new ReferenceError("Missing state on cookie.");
 		}
 
-		if (params.get("state") !== state) {
+		if (params.get("state") !== stateUrl) {
 			throw new RangeError("State in URL doesn't match state in cookie.");
 		}
 
 		debug("Validating authorization code");
+		let tokens = await this.client.validateAuthorizationCode(code);
 
-		// Exchange code for tokens
-		const formData = new URLSearchParams();
-		formData.set("client_id", this.options.clientId);
-		formData.set("client_secret", this.options.clientSecret);
-		formData.set("grant_type", "authorization_code");
-		formData.set("code", code);
-		formData.set("redirect_uri", this.options.redirectURI.toString());
-
-		const tokenResponse = await fetch(
-			"https://www.linkedin.com/oauth/v2/accessToken",
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/x-www-form-urlencoded" },
-				body: formData,
-			},
-		);
-
-		if (!tokenResponse.ok) {
-			const error = await tokenResponse.text();
-			throw new Error(`Failed to get access token: ${error}`);
-		}
-
-		const tokens = (await tokenResponse.json()) as {
-			access_token: string;
-			token_type: string;
-			expires_in: number;
-			refresh_token?: string;
-			scope?: string;
-		};
-
-		// Get user profile
-		const profile = await this.userProfile(tokens.access_token);
+		debug("Fetching user profile");
+		let profile = await this.userProfile(tokens.accessToken());
 
 		debug("Verifying the user profile");
 		let user = await this.verify({ request, tokens, profile });
@@ -216,6 +204,12 @@ export class LinkedInStrategy<User> extends Strategy<
 
 	/**
 	 * Return extra parameters to be included in the authorization request.
+	 *
+	 * Some OAuth 2.0 providers allow additional, non-standard parameters to be
+	 * included when requesting authorization.  Since these parameters are not
+	 * standardized by the OAuth 2.0 specification, OAuth 2.0-based authentication
+	 * strategies can override this function in order to populate these
+	 * parameters as required by the provider.
 	 */
 	protected authorizationParams(
 		params: URLSearchParams,
@@ -256,30 +250,18 @@ export class LinkedInStrategy<User> extends Strategy<
 	}
 
 	/**
-	 * Refresh the access token using a refresh token
+	 * Get a new OAuth2 Tokens object using the refresh token once the previous
+	 * access token has expired.
+	 * @param refreshToken The refresh token to use to get a new access token
+	 * @returns The new OAuth2 tokens object
+	 * @example
+	 * ```ts
+	 * let tokens = await strategy.refreshToken(refreshToken);
+	 * console.log(tokens.accessToken());
+	 * ```
 	 */
-	public async refreshToken(refreshToken: string) {
-		const formData = new URLSearchParams();
-		formData.set("client_id", this.options.clientId);
-		formData.set("client_secret", this.options.clientSecret);
-		formData.set("grant_type", "refresh_token");
-		formData.set("refresh_token", refreshToken);
-
-		const response = await fetch(
-			"https://www.linkedin.com/oauth/v2/accessToken",
-			{
-				method: "POST",
-				headers: { "Content-Type": "application/x-www-form-urlencoded" },
-				body: formData,
-			},
-		);
-
-		if (!response.ok) {
-			const error = await response.text();
-			throw new Error(`Failed to refresh token: ${error}`);
-		}
-
-		return response.json();
+	public refreshToken(refreshToken: string) {
+		return this.client.refreshAccessToken(refreshToken);
 	}
 }
 
@@ -288,13 +270,7 @@ export namespace LinkedInStrategy {
 		/** The request that triggered the verification flow */
 		request: Request;
 		/** The OAuth2 tokens retrieved from LinkedIn */
-		tokens: {
-			access_token: string;
-			token_type: string;
-			expires_in: number;
-			refresh_token?: string;
-			scope?: string;
-		};
+		tokens: OAuth2Tokens;
 		/** The LinkedIn profile */
 		profile: LinkedInProfile;
 	}
@@ -319,7 +295,7 @@ export namespace LinkedInStrategy {
 		/**
 		 * The URL of your application where LinkedIn will redirect after authentication
 		 */
-		redirectURI: URL | string;
+		redirectURI: URLConstructor;
 
 		/**
 		 * The scopes you want to request from LinkedIn
