@@ -29,11 +29,18 @@
 		"oauth2-linkedin",
 		"remix-auth-linkedin"
 	],
-	"author": {
-		"name": "Leandro Echevarria",
-		"email": "echevarrialeandro@gmail.com",
-		"url": "https://github.com/Lzok"
-	},
+	"authors": [
+		{
+			"name": "Leandro Echevarria",
+			"email": "echevarrialeandro@gmail.com",
+			"url": "https://github.com/Lzok"
+		},
+		{
+			"name": "Justin Xiao",
+			"email": "o927416847@example.com",
+			"url": "https://github.com/ttpss930141011"
+		}
+	],
 	"repository": {
 		"url": "https://github.com/Lzok/remix-auth-linkedin",
 		"type": "git"
