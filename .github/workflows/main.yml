@@ -16,10 +16,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
-      - name: Use Node 18
+      - name: Use Node 20
         uses: actions/setup-node@v1
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install dependencies
         uses: bahmutov/npm-install@v1
@@ -34,10 +34,10 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
-      - name: Use Node 18
+      - name: Use Node 20
         uses: actions/setup-node@v1
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install dependencies
         uses: bahmutov/npm-install@v1
@@ -52,34 +52,39 @@ jobs:
       - name: Checkout repo
         uses: actions/checkout@v2
 
-      - name: Use Node 18
-        uses: actions/setup-node@v1
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
         with:
-          node-version: 18
+          bun-version: latest
 
       - name: Install dependencies
         uses: bahmutov/npm-install@v1
 
       - name: Test
-        run: npm run test -- --ci --coverage --maxWorkers=2
+        run: bun test
 
-  lint:
-    name: Linter
+  quality:
+    name: Code Quality
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
         uses: actions/checkout@v2
 
-      - name: Use Node 18
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v1
+        with:
+          bun-version: latest
+
+      - name: Use Node 20
         uses: actions/setup-node@v1
         with:
-          node-version: 18
+          node-version: 20
 
       - name: Install dependencies
         uses: bahmutov/npm-install@v1
 
-      - name: Build
-        run: npm run build
+      - name: Check exports
+        run: npm run exports
 
-      - name: Lint
-        run: npm run lint
+      - name: Quality check
+        run: npm run quality
