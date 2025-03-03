@@ -17,7 +17,8 @@
 		"typecheck": "tsc --noEmit",
 		"quality": "biome check .",
 		"quality:fix": "biome check . --write --unsafe",
-		"exports": "bun run ./scripts/exports.ts"
+		"exports": "bun run ./scripts/exports.ts",
+		"test": "bun test"
 	},
 	"keywords": [
 		"remix",
